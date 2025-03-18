@@ -1,12 +1,10 @@
 #include "opencv2/highgui/highgui.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
-#include "chrono"
 #include "iostream"
 
 int main(int argc, char** argv)
 {
-    cv::namedWindow("Example3", cv::WINDOW_AUTOSIZE);
-    cv::namedWindow("Procesed Video", cv::WINDOW_AUTOSIZE);
+    cv::namedWindow("Processed Video", cv::WINDOW_AUTOSIZE);
 
     cv::VideoCapture cap;
     cap.open("C:/Users/bugro/Videos/VideoTest22.mp4");
@@ -16,77 +14,54 @@ int main(int argc, char** argv)
         (int)cap.get(cv::CAP_PROP_FRAME_WIDTH),
         (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT)
     );
-    cv::Size resizedSize(400, 300);
 
-    cv::VideoWriter writerStandart("C:/Users/bugro/Videos/output.mp4",
+    cv::VideoWriter writerROI("C:/Users/bugro/Videos/output_roi.mp4",
         cv::VideoWriter::fourcc('M', 'P', '4', 'V'),
-        fps, frameSize, false);
+        fps, frameSize, true);
 
-    cv::VideoWriter writerResized("C:/Users/bugro/Videos/output2.mp4",
-        cv::VideoWriter::fourcc('M', 'P', '4', 'V'),
-        fps, resizedSize, false);
-
-    double totalTimeStandartSize = 0;
-    double totalTimeResizedSize  = 0;
-    double totalResizeTime       = 0;
-    double frameCount            = 0;
-
-
-    cv::Mat frame, edges, gray, resizedFrame, resizedGray, resizedEdges;
+    cv::Mat frame, edges, gray;
     while (true) {
         cap >> frame;
         if (frame.empty()) break;
 
-        frameCount++;
-
-        auto startOriginal = std::chrono::high_resolution_clock::now();
-
         cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-        cv::Canny(gray, edges, 50, 150);
+        cv::GaussianBlur(gray, gray, cv::Size(5, 5), 1.5); // Другой способ убрать шумы кроме размытия ?
+        cv::Canny(gray, edges, 55, 110);
+        cv::dilate(edges, edges, cv::Mat());  // Утолщаем линии для лучшей видимости
 
-        auto endOriginal = std::chrono::high_resolution_clock::now();
-        totalTimeStandartSize += std::chrono::duration<double, std::milli>(endOriginal - startOriginal).count();
+        writerROI.write(edges);
 
-        writerStandart.write(edges);
+        int horizonY = 0;
+        for (int y = 0; y < frame.rows / 2; y++) {
+            if (cv::countNonZero(edges.row(y)) > frame.cols * 0.1) {
+                horizonY = y;
+                break;
+            }
+        }
 
-        auto startResize = std::chrono::high_resolution_clock::now();
+        int hoodY = 3 * frame.rows / 4;  // Стартуем поиск с 3/4 кадра
+        for (int y = 3 * frame.rows / 4; y < frame.rows - 1; y++) {
+            if (cv::countNonZero(edges.row(y)) > frame.cols * 0.05) {
+                hoodY = y;
+                break;
+            }
+        }
 
-        cv::resize(frame, resizedFrame, resizedSize);
+        // Рисуем область интереса
+        cv::rectangle(frame, cv::Point(0, horizonY), cv::Point(frame.cols, hoodY), cv::Scalar(0, 255, 0), 2);
 
-        auto endResize = std::chrono::high_resolution_clock::now();
-        totalResizeTime += std::chrono::duration<double, std::milli>(endResize - startResize).count();
+        // Для дебага, незабыть закомментить накладываем контуры Кэнни поверх кадра
+        cv::cvtColor(edges, edges, cv::COLOR_GRAY2BGR);
+        cv::addWeighted(frame, 0.8, edges, 0.5, 0, frame);
 
-        auto startResized = std::chrono::high_resolution_clock::now();
-
-        cv::cvtColor(resizedFrame, resizedGray, cv::COLOR_BGR2GRAY);
-        cv::Canny(resizedGray, resizedEdges, 50, 150); // Используем те же параметры
-
-        auto endResized = std::chrono::high_resolution_clock::now();
-        totalTimeResizedSize += std::chrono::duration<double, std::milli>(endResized - startResized).count();
-
-        writerResized.write(resizedEdges);
-
-        // Показываем кадры
-        cv::imshow("Original", edges);
-        cv::imshow("Resized", resizedEdges);
+        writerROI.write(frame);
+        cv::imshow("Processed Video", frame);
 
         if (cv::waitKey(33) >= 0) break;
     }
 
-    setlocale(LC_ALL, "Russian");
-
-    std::cout << "Среднее время обработки ОРИГИНАЛЬНОГО кадра: "
-        << totalTimeStandartSize / frameCount << " мс" << std::endl;
-
-    std::cout << "Среднее время обработки УМЕНЬШЕННОГО кадра: "
-        << totalTimeResizedSize / frameCount << " мс" << std::endl;
-
-    std::cout << "Среднее время на уменьшение кадра: "
-        << totalResizeTime / frameCount << " мс" << std::endl;
-
     cap.release();
-    writerStandart.release();
-    writerResized.release();
+    writerROI.release();
     cv::destroyAllWindows();
 
     return 0;
