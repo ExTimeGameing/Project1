@@ -26,5 +26,7 @@
     <Library Include="opencv_imgproc460d.lib" />
     <Library Include="opencv_video460d.lib" />
     <Library Include="opencv_videoio460d.lib" />
+    <Library Include="opencv_xfeatures2d460d.lib" />
+    <Library Include="..\4.6.0\build\x64\vc17\lib\Debug\opencv_flann460d.lib" />
   </ItemGroup>
 </Project>
