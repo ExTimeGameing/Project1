@@ -108,12 +108,13 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>C:\Users\bugro\source\repos\Project1\4.6.0\sources\modules\xfeatures2d\include;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>opencv_features2d460d.lib;opencv_core460d.lib;opencv_imgproc460d.lib;opencv_highgui460d.lib;opencv_flann460d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>opencv_features2d460d.lib;opencv_core460d.lib;opencv_imgproc460d.lib;opencv_highgui460d.lib;opencv_flann460d.lib;opencv_videoio460d.lib;opencv_calib3d460d.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -139,6 +140,7 @@
   </ItemGroup>
   <ItemGroup>
     <Library Include="..\4.6.0\build\x64\vc17\lib\Debug\opencv_flann460d.lib" />
+    <Library Include="opencv_calib3d460d.lib" />
     <Library Include="opencv_core460d.lib" />
     <Library Include="opencv_highgui460d.lib" />
     <Library Include="opencv_imgcodecs460d.lib" />
