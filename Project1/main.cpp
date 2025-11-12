@@ -1,143 +1,146 @@
 ﻿#include <opencv2/opencv.hpp>
-#include <opencv2/features2d.hpp>
-#include <filesystem>
-#include <fstream>
 #include <iostream>
+#include <fstream>
 #include <vector>
-#include <string>
+#include <chrono>
+#include <cmath>
 
-using namespace cv;
 using namespace std;
+using namespace cv;
 
-// === Параметры доски и камеры ===
-const Size boardSize(7, 7);       // количество внутренних углов шахматной доски
-const float squareSize = 0.05f;   // размер клетки, м (5 см)
-const double pixelSize_mm = 0.0055; // размер пикселя в мм
-
-// === Генерация 3D-точек шахматной доски ===
-vector<Point3f> createChessboardCorners(Size boardSize, float squareSize) {
-    vector<Point3f> corners;
-    for (int i = 0; i < boardSize.height; ++i)
-        for (int j = 0; j < boardSize.width; ++j)
-            corners.push_back(Point3f(j * squareSize, i * squareSize, 0));
-    return corners;
-}
-
-// === Калибровка по одному видео ===
-void processVideo(const string& videoPath, const string& outputPrefix, int frameStep = 1) {
-    VideoCapture cap(videoPath);
+// Функция для обработки видеофайла
+void processVideo(const string& inputPath, const string& outputPathSegments, const string& outputPathContours, const string& timeLogPath) {
+    VideoCapture cap(inputPath);
     if (!cap.isOpened()) {
-        cerr << "Не удалось открыть видео: " << videoPath << endl;
+        cerr << "Ошибка: не удалось открыть видеофайл: " << inputPath << endl;
         return;
     }
 
-    // Подготовка для записи видео
-    int frame_width = static_cast<int>(cap.get(CAP_PROP_FRAME_WIDTH));
-    int frame_height = static_cast<int>(cap.get(CAP_PROP_FRAME_HEIGHT));
-    VideoWriter writer("output/corners_" + outputPrefix + ".avi",
-        VideoWriter::fourcc('M', 'J', 'P', 'G'), 20,
-        Size(frame_width, frame_height));
+    int totalFrames = static_cast<int>(cap.get(CAP_PROP_FRAME_COUNT));
+    int fps = static_cast<int>(cap.get(CAP_PROP_FPS));
+    Size frameSize(static_cast<int>(cap.get(CAP_PROP_FRAME_WIDTH)),
+        static_cast<int>(cap.get(CAP_PROP_FRAME_HEIGHT)));
 
-    vector<vector<Point3f>> objectPoints;
-    vector<vector<Point2f>> imagePoints;
-    vector<Point3f> objp = createChessboardCorners(boardSize, squareSize);
+    VideoWriter writerSegments(outputPathSegments, VideoWriter::fourcc('M', 'J', 'P', 'G'), fps, frameSize);
+    VideoWriter writerContours(outputPathContours, VideoWriter::fourcc('M', 'J', 'P', 'G'), fps, frameSize);
 
+    if (!writerSegments.isOpened()) {
+        cerr << "Ошибка: не удалось открыть выходной видеофайл для сегментов: " << outputPathSegments << endl;
+        return;
+    }
+    if (!writerContours.isOpened()) {
+        cerr << "Ошибка: не удалось открыть выходной видеофайл для контуров: " << outputPathContours << endl;
+        return;
+    }
+
+    ofstream timeLogFile(timeLogPath);
+    if (!timeLogFile.is_open()) {
+        cerr << "Ошибка: не удалось открыть файл для лога времени: " << timeLogPath << endl;
+        return;
+    }
+
+    Mat frame, segmented, gray, edges, contoursOverlay;
     int frameCount = 0;
-    Mat frame, gray;
-    //int maxFrames = 30; // обработаем только 100 кадров
+
+    vector<double> processingTimes;
 
     while (true) {
         cap >> frame;
-        //if (frame.empty() || frameCount >= maxFrames) break;
-        if (frame.empty()) break;
-        frameCount++;
-        //cout << "Кадр номер(" << frameCount << "): " << endl;
-
-
-        //double elapsed = (cv::getTickCount() - start) / cv::getTickFrequency();
-        //if (elapsed > maxTime) break;
-
-        // Пропускаем кадры для прореживания
-        if (frameCount % frameStep != 0) continue;
-
-        cvtColor(frame, gray, COLOR_BGR2GRAY);
-
-        vector<Point2f> corners;
-        bool found = findChessboardCorners(gray, boardSize, corners,
-            CALIB_CB_ADAPTIVE_THRESH + CALIB_CB_NORMALIZE_IMAGE);
-
-        if (found) {
-            cornerSubPix(gray, corners, Size(11, 11), Size(-1, -1),
-                TermCriteria(TermCriteria::EPS + TermCriteria::MAX_ITER, 30, 0.001));
-            drawChessboardCorners(frame, boardSize, corners, found);
-            objectPoints.push_back(objp);
-            imagePoints.push_back(corners);
+        if (frame.empty()) {
+            break;
         }
 
-        writer.write(frame);
+        auto start = chrono::high_resolution_clock::now();
 
-        // Показываем текущий кадр в окне:
-        //imshow("Calibration process", frame);
-        //if (waitKey(10) == 27) break; // выход по ESC
+        // 1. Применить MeanShift
+        pyrMeanShiftFiltering(frame, segmented, 20, 30, 2);
+
+        auto end = chrono::high_resolution_clock::now();
+        double duration = chrono::duration_cast<chrono::microseconds>(end - start).count() / 1000.0; // в мс
+        processingTimes.push_back(duration);
+        timeLogFile << duration << endl;
+
+        // 3. Преобразовать в оттенки серого и применить Canny
+        cvtColor(segmented, gray, COLOR_BGR2GRAY);
+        Canny(gray, edges, 50, 150);
+
+        // 4. Наложить контуры на сегментированное изображение
+        contoursOverlay = segmented.clone(); // Копируем сегментированное изображение
+
+        // Вариант 1: Использовать findContours/drawContours
+        //vector<vector<Point>> contours;
+        //vector<Vec4i> hierarchy;
+        //findContours(edges, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+        //drawContours(contoursOverlay, contours, -1, Scalar(0, 255, 0), 1, LINE_8); // Зеленые контуры
+
+        // Вариант 2: Попиксельная обработка
+        
+        for (int y = 0; y < edges.rows; ++y) {
+            for (int x = 0; x < edges.cols; ++x) {
+                if (edges.at<uchar>(y, x) != 0) { // Если пиксель является частью контура
+                    contoursOverlay.at<Vec3b>(y, x) = Vec3b(0, 255, 0); // Установить зеленый цвет
+                }
+            }
+        }
+        
+
+        // 2. Записать сегментированное изображение
+        writerSegments.write(segmented);
+
+        // 5. Записать изображение с наложенными контурами
+        writerContours.write(contoursOverlay);
+
+        frameCount++;
+        if (frameCount % 30 == 0) { // Прогресс каждые 30 кадров
+            cout << "Обработано кадров: " << frameCount << " из " << totalFrames << endl;
+        }
     }
 
     cap.release();
-    writer.release();
+    writerSegments.release();
+    writerContours.release();
+    timeLogFile.close();
 
-    // === Калибровка ===
-    if (objectPoints.size() < 5) {
-        cerr << "Недостаточно кадров с доской для калибровки: " << objectPoints.size() << endl;
-        return;
+    cout << "Видео " << inputPath << " обработано." << endl;
+    cout << "Выходные файлы: " << outputPathSegments << ", " << outputPathContours << endl;
+    cout << "Лог времени: " << timeLogPath << endl;
+
+    // Вывод статистики по времени
+    if (!processingTimes.empty()) {
+        double sum = 0, sumSquares = 0;
+        double minTime = processingTimes[0], maxTime = processingTimes[0];
+        for (double t : processingTimes) {
+            sum += t;
+            sumSquares += t * t;
+            if (t < minTime) minTime = t;
+            if (t > maxTime) maxTime = t;
+        }
+        double mean = sum / processingTimes.size();
+        double variance = (sumSquares / processingTimes.size()) - (mean * mean);
+        double stddev = sqrt(variance);
+
+        cout << "--- Статистика по времени обработки (мс) для " << inputPath << " ---" << endl;
+        cout << "Среднее: " << mean << endl;
+        cout << "Минимум: " << minTime << endl;
+        cout << "Максимум: " << maxTime << endl;
+        cout << "Стандартное отклонение: " << stddev << endl;
     }
-
-    Mat cameraMatrix, distCoeffs, rvecs, tvecs;
-    vector<Mat> rvecsOut, tvecsOut;
-    double rms = calibrateCamera(objectPoints, imagePoints, Size(frame_width, frame_height),
-        cameraMatrix, distCoeffs, rvecsOut, tvecsOut);
-
-    cout << "RMS ошибка калибровки (" << outputPrefix << "): " << rms << endl;
-
-    // === Сохранение результатов ===
-    ofstream fout("output/calibration_results_" + outputPrefix + ".txt");
-    fout << "RMS = " << rms << "\n";
-    fout << "Camera Matrix:\n" << cameraMatrix << "\n";
-    fout << "Distortion Coefficients:\n" << distCoeffs << "\n";
-
-    // Фокусное расстояние в мм
-    double fx_mm = cameraMatrix.at<double>(0, 0) * pixelSize_mm;
-    double fy_mm = cameraMatrix.at<double>(1, 1) * pixelSize_mm;
-    fout << "Focal length (mm): fx = " << fx_mm << ", fy = " << fy_mm << "\n";
-    fout.close();
-
-    // === Сохранение калибровочных точек ===
-    ofstream pointsFile("output/calibration_points.txt");
-    for (size_t i = 0; i < imagePoints.size(); ++i) {
-        pointsFile << "Frame " << i << ":\n";
-        for (const auto& p : imagePoints[i])
-            pointsFile << p.x << " " << p.y << "\n";
-        pointsFile << "\n";
-    }
-    pointsFile.close();
 }
 
-int main() {
-    std::setlocale(LC_ALL, "");
-    filesystem::create_directory("output");
+int main(int argc, char* argv[]) {
+    // Обработка первого видеофайла
+    processVideo("C:/Users/bugro/Videos/city.mp4",
+        "city_segments.avi",
+        "city_contours.avi",
+        "city_timing_log.txt");
 
-    // Основные видео
-    cout << "=== Процесс первого видео запущен ===" << endl;
-    processVideo("C:/Users/bugro/Videos/Calibration_01.mp4", "Calibration_01");
-    cout << "=== Процесс второго видео запущен ===" << endl;
-    processVideo("C:/Users/bugro/Videos/Calibration_02.mp4", "Calibration_02");
+    // Обработка второго видеофайла
+    processVideo("C:/Users/bugro/Videos/winter.mp4",
+        "winter_segments.avi",
+        "winter_contours.avi",
+        "winter_timing_log.txt");
 
-    // Прореживание кадров (в 2, 4, 8 раз)
-    cout << "=== Процесс первое видео прореживание в 2 раза ===" << endl;
-    processVideo("C:/Users/bugro/Videos/Calibration_01.mp4", "Calibration_01_downsample_2", 2);
-    cout << "=== Процесс первое видео прореживание в 4 раза  ===" << endl;
-    processVideo("C:/Users/bugro/Videos/Calibration_01.mp4", "Calibration_01_downsample_4", 4);
-    cout << "=== Процесс первое видео прореживание в 8 раз  ===" << endl;
-    processVideo("C:/Users/bugro/Videos/Calibration_01.mp4", "Calibration_01_downsample_8", 8);
+    cout << "Обработка завершена. Проверьте выходные файлы." << endl;
 
-    cout << "=== Калибровка завершена ===" << endl;
     return 0;
 }
