@@ -8,57 +8,8 @@
 using namespace std;
 using namespace cv;
 
-// Функция для создания бинарной маски границ сегментов
-void createSegmentBoundaryMask(const Mat& segmented, Mat& boundaryMask) {
-    if (segmented.empty() || segmented.channels() != 3) {
-        boundaryMask = Mat::zeros(segmented.size(), CV_8UC1);
-        return;
-    }
-
-    boundaryMask = Mat::zeros(segmented.size(), CV_8UC1); // Создаем бинарное изображение (0 или 255)
-
-    // Проходим по всем пикселям, кроме границ изображения
-    for (int y = 1; y < segmented.rows - 1; ++y) {
-        for (int x = 1; x < segmented.cols - 1; ++x) {
-            Vec3b currentPixel = segmented.at<Vec3b>(y, x);
-
-            // Проверяем соседей (вверх, вниз, влево, вправо)
-            bool isBoundary = false;
-            if (segmented.at<Vec3b>(y - 1, x) != currentPixel || // вверх
-                segmented.at<Vec3b>(y + 1, x) != currentPixel || // вниз
-                segmented.at<Vec3b>(y, x - 1) != currentPixel || // влево
-                segmented.at<Vec3b>(y, x + 1) != currentPixel) { // вправо
-                isBoundary = true;
-            }
-
-            // Если пиксель находится на границе сегмента, устанавливаем точку в маске в 255 (белый)
-            if (isBoundary) {
-                boundaryMask.at<uchar>(y, x) = 255; // Белый цвет в бинарной маске
-            }
-        }
-    }
-}
-
-// Функция для отрисовки границ сегментов с использованием findContours/drawContours
-void drawSegmentBoundariesWithContours(Mat& image, const Mat& segmented, Scalar boundaryColor = Scalar(0, 0, 0)) {
-    if (image.empty() || segmented.empty() || image.size() != segmented.size() || image.channels() != segmented.channels()) {
-        return; // Проверка на корректность входных данных
-    }
-
-    Mat boundaryMask;
-    createSegmentBoundaryMask(segmented, boundaryMask);
-
-    // Находим контуры на бинарной маске
-    vector<vector<Point>> contours;
-    vector<Vec4i> hierarchy;
-    findContours(boundaryMask, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-
-    // Рисуем найденные контуры на исходном изображении
-    drawContours(image, contours, -1, boundaryColor, 1, LINE_8); // Толщина 1, зеленый цвет
-}
-
 // Функция для обработки видеофайла
-void processVideo(const string& inputPath, const string& outputPathSegmentsWithBoundaries, const string& outputPathOriginalWithCanny, const string& timeLogPath) {
+void processVideo(const string& inputPath, const string& outputPathSegments, const string& outputPathContours, const string& timeLogPath) {
     VideoCapture cap(inputPath);
     if (!cap.isOpened()) {
         cerr << "Ошибка: не удалось открыть видеофайл: " << inputPath << endl;
@@ -70,17 +21,15 @@ void processVideo(const string& inputPath, const string& outputPathSegmentsWithB
     Size frameSize(static_cast<int>(cap.get(CAP_PROP_FRAME_WIDTH)),
         static_cast<int>(cap.get(CAP_PROP_FRAME_HEIGHT)));
 
-    // Видео: MeanShift + визуализация границ сегментов (черные)
-    VideoWriter writerSegmentsWithBoundaries(outputPathSegmentsWithBoundaries, VideoWriter::fourcc('M', 'J', 'P', 'G'), fps, frameSize);
-    // Видео: Оригинал + визуализация контуров Canny (зеленые)
-    VideoWriter writerOriginalWithCanny(outputPathOriginalWithCanny, VideoWriter::fourcc('M', 'J', 'P', 'G'), fps, frameSize);
+    VideoWriter writerSegments(outputPathSegments, VideoWriter::fourcc('M', 'J', 'P', 'G'), fps, frameSize);
+    VideoWriter writerContours(outputPathContours, VideoWriter::fourcc('M', 'J', 'P', 'G'), fps, frameSize);
 
-    if (!writerSegmentsWithBoundaries.isOpened()) {
-        cerr << "Ошибка: не удалось открыть выходной видеофайл для MeanShift с границами: " << outputPathSegmentsWithBoundaries << endl;
+    if (!writerSegments.isOpened()) {
+        cerr << "Ошибка: не удалось открыть выходной видеофайл для сегментов: " << outputPathSegments << endl;
         return;
     }
-    if (!writerOriginalWithCanny.isOpened()) {
-        cerr << "Ошибка: не удалось открыть выходной видеофайл для оригинала с контурами: " << outputPathOriginalWithCanny << endl;
+    if (!writerContours.isOpened()) {
+        cerr << "Ошибка: не удалось открыть выходной видеофайл для контуров: " << outputPathContours << endl;
         return;
     }
 
@@ -90,7 +39,7 @@ void processVideo(const string& inputPath, const string& outputPathSegmentsWithB
         return;
     }
 
-    Mat frame, originalFrame, segmented, gray, edges, segmentsWithBoundaries, originalWithCanny;
+    Mat frame, segmented, gray, edges, contoursOverlay;
     int frameCount = 0;
 
     vector<double> processingTimes;
@@ -101,40 +50,45 @@ void processVideo(const string& inputPath, const string& outputPathSegmentsWithB
             break;
         }
 
-        // Сохраняем оригинальный кадр
-        originalFrame = frame.clone();
-
         auto start = chrono::high_resolution_clock::now();
 
-        // Применить MeanShift к оригинальному кадру
+        // 1. Применить MeanShift
         pyrMeanShiftFiltering(frame, segmented, 20, 30, 2);
-
-        // Преобразовать ОРИГИНАЛЬНЫЙ кадр в оттенки серого и применить Canny
-        cvtColor(originalFrame, gray, COLOR_BGR2GRAY);
-        Canny(gray, edges, 50, 150);
 
         auto end = chrono::high_resolution_clock::now();
         double duration = chrono::duration_cast<chrono::microseconds>(end - start).count() / 1000.0; // в мс
         processingTimes.push_back(duration);
         timeLogFile << duration << endl;
 
-        // --- Видео 1: MeanShift + границы сегментов ---
-        segmentsWithBoundaries = segmented.clone(); // Копируем сегментированное изображение
-        // Нарисовать границы сегментов (черные линии) с использованием findContours/drawContours
-        drawSegmentBoundariesWithContours(segmentsWithBoundaries, segmented, Scalar(0, 0, 0)); // Черный цвет
-        writerSegmentsWithBoundaries.write(segmentsWithBoundaries);
+        // 3. Преобразовать в оттенки серого и применить Canny
+        cvtColor(segmented, gray, COLOR_BGR2GRAY);
+        Canny(gray, edges, 50, 150);
 
-        // --- Видео 2: Оригинал + контуры Canny ---
-        originalWithCanny = originalFrame.clone(); // Копируем оригинальный кадр
-        // Попиксельно наложить бинарные контуры Canny на оригинальный цветной кадр
-        for (int y = 0; y < originalWithCanny.rows; ++y) {
-            for (int x = 0; x < originalWithCanny.cols; ++x) {
+        // 4. Наложить контуры на сегментированное изображение
+        contoursOverlay = segmented.clone(); // Копируем сегментированное изображение
+
+        // Вариант 1: Использовать findContours/drawContours
+        //vector<vector<Point>> contours;
+        //vector<Vec4i> hierarchy;
+        //findContours(edges, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+        //drawContours(contoursOverlay, contours, -1, Scalar(0, 255, 0), 1, LINE_8); // Зеленые контуры
+
+        // Вариант 2: Попиксельная обработка
+        
+        for (int y = 0; y < edges.rows; ++y) {
+            for (int x = 0; x < edges.cols; ++x) {
                 if (edges.at<uchar>(y, x) != 0) { // Если пиксель является частью контура
-                    originalWithCanny.at<Vec3b>(y, x) = Vec3b(0, 255, 0); // Установить зеленый цвет
+                    contoursOverlay.at<Vec3b>(y, x) = Vec3b(0, 255, 0); // Установить зеленый цвет
                 }
             }
         }
-        writerOriginalWithCanny.write(originalWithCanny);
+        
+
+        // 2. Записать сегментированное изображение
+        writerSegments.write(segmented);
+
+        // 5. Записать изображение с наложенными контурами
+        writerContours.write(contoursOverlay);
 
         frameCount++;
         if (frameCount % 30 == 0) { // Прогресс каждые 30 кадров
@@ -143,14 +97,12 @@ void processVideo(const string& inputPath, const string& outputPathSegmentsWithB
     }
 
     cap.release();
-    writerSegmentsWithBoundaries.release();
-    writerOriginalWithCanny.release();
+    writerSegments.release();
+    writerContours.release();
     timeLogFile.close();
 
     cout << "Видео " << inputPath << " обработано." << endl;
-    cout << "Выходные файлы:" << endl;
-    cout << "  MeanShift + границы сегментов: " << outputPathSegmentsWithBoundaries << endl;
-    cout << "  Оригинал + контуры Canny: " << outputPathOriginalWithCanny << endl;
+    cout << "Выходные файлы: " << outputPathSegments << ", " << outputPathContours << endl;
     cout << "Лог времени: " << timeLogPath << endl;
 
     // Вывод статистики по времени
@@ -177,15 +129,15 @@ void processVideo(const string& inputPath, const string& outputPathSegmentsWithB
 
 int main(int argc, char* argv[]) {
     // Обработка первого видеофайла
-    processVideo("city.mp4",
-        "city_meanshift_boundaries.avi",    // MeanShift + границы сегментов (черные)
-        "city_original_with_canny.avi",     // Оригинал + контуры Canny (зеленые)
+    processVideo("C:/Users/bugro/Videos/city.mp4",
+        "city_segments.avi",
+        "city_contours.avi",
         "city_timing_log.txt");
 
     // Обработка второго видеофайла
-    processVideo("winter.mp4",
-        "winter_meanshift_boundaries.avi",  // MeanShift + границы сегментов (черные)
-        "winter_original_with_canny.avi",   // Оригинал + контуры Canny (зеленые)
+    processVideo("C:/Users/bugro/Videos/winter.mp4",
+        "winter_segments.avi",
+        "winter_contours.avi",
         "winter_timing_log.txt");
 
     cout << "Обработка завершена. Проверьте выходные файлы." << endl;
